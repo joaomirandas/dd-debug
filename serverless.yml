@@ -1,0 +1,109 @@
+service: dd-debug
+
+plugins:
+  - serverless-plugin-datadog
+
+custom:
+  accountID: "************"
+  mongoDB: "mongodb+srv://DB_USERNAME:DB_PASSWORD@DB_ADDRESS.mongodb.net/DB_NAME?retryWrites=true&w=majority"
+  controlDD:
+    dev: false
+    hml: true
+    app: true
+  datadog:
+    enabled: ${self:custom.controlDD.${opt:stage}, false}
+    enableDDTracing: true
+    addLayers: true
+    flushMetricsToLogs: true
+    logLevel: "INFO"
+    forwarder: arn:aws:lambda:${self:provider.region}:${self:custom.accountID}:function:datadog-forwarder-Forwarder-2HGPPPR84KO4
+
+provider:
+  name: aws
+  runtime: nodejs12.x
+  stackTags:
+    centro: "grupo"
+  tags:
+    centro: "grupo"
+  stage: ${opt:stage}
+  region: sa-east-1
+  timeout: 10
+  memorySize: 256
+  logRetentionInDays: 7
+  environment:
+    STAGE: ${self:provider.stage}
+    MONGODB_URI: ${self:custom.mongoDB}
+  # We use VPC's here - but to this file example is better to be commented
+  # vpc:
+  #   securityGroupIds:
+  #     - sg-0a7662106d8612123
+  #   subnetIds:
+  #     - subnet-031229237ae712123
+  apiGateway:
+    shouldStartNameWithService: true
+  versionFunctions: false
+  iam:
+    role:
+      statements:
+        - Effect: "Allow"
+          Action:
+            - "sns:Publish"
+          Resource: "arn:aws:sns:${self:provider.region}:${self:custom.accountID}:*"
+        - Effect: "Allow"
+          Action:
+            - "sqs:SendMessage"
+            - "sqs:ReceiveMessage"
+            - "sqs:DeleteMessage"
+            - "sqs:GetQueueAttributes"
+          Resource:
+            - "arn:aws:sqs:${self:provider.region}:${self:custom.accountID}:*"
+
+layers:
+  layerTwo:
+    name: ${self:service}-${self:provider.stage}-layerTwo
+    path: ./layers/layerTwo
+    description: "layer with internal mongoose/underscore"
+    package:
+      patterns:
+        - 'node_modules/**'
+
+package:
+  patterns:
+    - '!./README.md'
+    - '!./test.js'
+    - '!./layers/**'
+    - '!./node_modules/**'
+    - '!./package.json'
+    - '!./package-lock.json'
+
+functions:
+  debug:
+    handler: debug.handler
+    destinations:
+      onFailure: "arn:aws:sqs:${self:provider.region}:${self:custom.accountID}:debugger-DLQ-${self:provider.stage}"
+    events:
+      - httpApi:
+         path: /dd/debug
+         method: get
+      - sns:
+          arn: !Ref debuggerTopic
+          topicName: debugger-${self:provider.stage}
+          filterPolicy:
+            event:
+              - debugger:event
+    layers:
+      - { Ref: LayerTwoLambdaLayer }
+
+resources:
+  Resources:
+    
+    debuggerTopic:
+      Type: "AWS::SNS::Topic"
+      Properties:
+        TopicName: debugger-${self:provider.stage}
+
+    debuggerQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: "debugger-DLQ-${self:provider.stage}"
+        MessageRetentionPeriod: 1209600
